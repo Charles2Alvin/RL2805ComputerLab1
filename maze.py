@@ -63,11 +63,12 @@ class Maze:
     STEP_REWARD = 0
     GOAL_REWARD = 1
     IMPOSSIBLE_REWARD = -100
-    MINOUTAUR_REWARD = -1
+    MINOTAUR_REWARD = -1
 
-    def __init__(self, maze):
+    def __init__(self, maze, MINOTAUR_CAN_STAY):
         """ Constructor of the environment Maze.
         """
+        self.MINOTAUR_CAN_STAY = MINOTAUR_CAN_STAY
         self.maze = maze
         self.actions = self.__actions()
         self.states, self.map = self.__states()
@@ -104,10 +105,8 @@ class Maze:
                             s += 1
         states[s] = 'WIN'
         map['WIN'] = s
-        s += 1
-        states[s] = 'DEAD'
-        map['DEAD'] = s
-        s += 1
+        states[s + 1] = 'DEAD'
+        map['DEAD'] = s + 1
 
         return states, map
 
@@ -121,10 +120,10 @@ class Maze:
         return self.maze[px, py] == 2 and not self.is_dead(s)
 
     def is_dead(self, s):
-        if self.states[s] == 'DEAD':
-            return True
         if self.states[s] == 'WIN':
             return False
+        if self.states[s] == 'DEAD':
+            return True
         px, py, mx, my = self.states[s]
 
         return px == mx and py == my
@@ -170,7 +169,11 @@ class Maze:
         mx, my = self.states[s][2], self.states[s][3]
 
         possible_moves = []
-        for i in range(self.n_actions):
+        if self.MINOTAUR_CAN_STAY:
+            all_moves = [i for i in range(self.n_actions)]
+        else:
+            all_moves = [i for i in range(1, self.n_actions)]
+        for i in all_moves:
             dx = self.actions[i][0]
             dy = self.actions[i][1]
             row = mx + dx
@@ -199,15 +202,12 @@ class Maze:
             for a in range(self.n_actions):
                 if self.states[s] == 'WIN' or self.states[s] == 'DEAD':
                     transition_probabilities[s, s, a] = 1
-
                 elif self.is_dead(s):
                     next_s = self.map['DEAD']
                     transition_probabilities[next_s, s, a] = 1
-
                 elif self.is_win(s):
                     next_s = self.map['WIN']
                     transition_probabilities[next_s, s, a] = 1
-
                 else:
                     mx, my = self.states[s][2], self.states[s][3]
                     next_s = self.__move(s, a)
@@ -245,7 +245,7 @@ class Maze:
                     if self.is_win(s):
                         rewards[s, a] = self.GOAL_REWARD
                     elif self.is_dead(s):
-                        rewards[s, a] = self.MINOUTAUR_REWARD
+                        rewards[s, a] = self.MINOTAUR_REWARD
                     else:
                         rewards[s, a] = self.STEP_REWARD
 
@@ -274,6 +274,29 @@ class Maze:
                 # Update time and state for next iteration
                 t += 1
                 s = next_s
+
+        if method == 'ValIter':
+            # Initialize current state, next state and time
+            t = 1
+            s = self.map[start]
+            # Add the starting position in the maze to the path
+            path.append(start)
+            # Move to next state given the policy and the current state
+            next_s = self.__move(s, policy[s])
+            # Add the position in the maze corresponding to the next state
+            # to the path
+            path.append(self.states[next_s])
+            # Loop while state is not the goal state
+            while s != next_s:
+                # Update state
+                s = next_s
+                # Move to next state given the policy and the current state
+                next_s = self.__move(s, policy[s])
+                # Add the position in the maze corresponding to the next state
+                # to the path
+                path.append(self.states[next_s])
+                # Update time and state for next iteration
+                t += 1
 
         return path
 
@@ -347,8 +370,6 @@ class Maze:
         grid.get_celld()[(6, 5)].get_text().set_text("Minotaur")
 
 
-
-
 def dynamic_programming(env, horizon):
     """ Solves the shortest path problem using dynamic programming
         :input Maze env           : The maze environment in which we seek to
@@ -392,6 +413,63 @@ def dynamic_programming(env, horizon):
         V[:, t] = np.max(Q, 1)
         # The optimal action is the one that maximizes the Q function
         policy[:, t] = np.argmax(Q, 1)
+    return V, policy
+
+
+def value_iteration(env, gamma, epsilon):
+    """ Solves the shortest path problem using value iteration
+        :input Maze env           : The maze environment in which we seek to
+                                    find the shortest path.
+        :input float gamma        : The discount factor.
+        :input float epsilon      : accuracy of the value iteration procedure.
+        :return numpy.array V     : Optimal values for every state at every
+                                    time, dimension S*T
+        :return numpy.array policy: Optimal time-varying policy at every state,
+                                    dimension S*T
+    """
+    # The value itearation algorithm requires the knowledge of :
+    # - Transition probabilities
+    # - Rewards
+    # - State space
+    # - Action space
+    # - The finite horizon
+    p = env.transition_probabilities
+    r = env.rewards
+    n_states = env.n_states
+    n_actions = env.n_actions
+
+    # Required variables and temporary ones for the VI to run
+    V = np.zeros(n_states)
+    Q = np.zeros((n_states, n_actions))
+    BV = np.zeros(n_states)
+    # Iteration counter
+    n = 0
+    # Tolerance error
+    tol = (1 - gamma) * epsilon / gamma
+
+    # Initialization of the VI
+    for s in range(n_states):
+        for a in range(n_actions):
+            Q[s, a] = r[s, a] + gamma * np.dot(p[:, s, a], V)
+    BV = np.max(Q, 1)
+
+    # Iterate until convergence
+    while np.linalg.norm(V - BV) >= tol and n < 200:
+        # Increment by one the numbers of iteration
+        n += 1
+        # Update the value function
+        V = np.copy(BV)
+        # Compute the new BV
+        for s in range(n_states):
+            for a in range(n_actions):
+                Q[s, a] = r[s, a] + gamma * np.dot(p[:, s, a], V)
+        BV = np.max(Q, 1)
+        # Show error
+        # print(np.linalg.norm(V - BV))
+
+    # Compute policy
+    policy = np.argmax(Q, 1)
+    # Return the obtained policy
     return V, policy
 
 
@@ -471,9 +549,7 @@ def animate_solution(maze, path):
     # Update the color at each frame
     for i in range(len(path)):
 
-        ax.set_title(f'\t \t \t \t  Policy simulation \t \t \t t {i} T {len(path) - 1}'.expandtabs())
-        # First clear the prev illustration, if path[i] is same as path[i-1] then it is already changed!
-        # Illustration of current status
+        ax.set_title(f'\t \t \t \t  Simulation \t \t \t \t t {i} T {len(path) - 1}'.expandtabs())
         if i > 0:
             # if path[i][0:2] != path[i-1][0:2]:
             grid.get_celld()[(path[i - 1][0:2])
@@ -494,24 +570,13 @@ def animate_solution(maze, path):
         if path[i][0:2] == path[i][2:4]:
             grid.get_celld()[(path[i][0:2])].set_facecolor(LIGHT_RED)
             grid.get_celld()[(path[i][0:2])].get_text().set_text('DEAD')
-            break  # Since nothing changes
+            break
         # Position is the same and it is WIN!
         elif maze[path[i][0:2]] == 2:
             grid.get_celld()[(path[i][0:2])].set_facecolor(LIGHT_GREEN)
             grid.get_celld()[(path[i][0:2])].get_text().set_text('WIN')
-            break  # Since nothing changes
+            break
 
         display.display(fig)
-        # Save figures
-        try:
-            os.makedirs(f'{os.getcwd()}/animation')
-        except:
-            fig.savefig(f"{os.getcwd()}/animation/move{i}.png")
-
         display.clear_output(wait=True)
         time.sleep(1)
-    # Save figures
-    try:
-        os.makedirs(f'{os.getcwd()}/animation')
-    except IOError:
-        fig.savefig(f"{os.getcwd()}/animation/move_last.png")
